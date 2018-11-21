@@ -9,12 +9,8 @@ import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.*;
 import org.apache.lucene.queries.function.FunctionQuery;
 import org.apache.lucene.queries.function.FunctionRangeQuery;
-import org.apache.lucene.queries.function.valuesource.DocFreqValueSource;
 import org.apache.lucene.queries.function.valuesource.TermFreqValueSource;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.*;
 import org.apache.lucene.store.RAMDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.junit.AfterClass;
@@ -77,9 +73,10 @@ public class FunctionQueryTest {
 
     @Test
     public void testFunctionTermFreq() throws IOException {
+        String fieldName = "f";
         String searchTerm = "fox";
         Query functionQuery = new FunctionQuery(
-                new TermFreqValueSource("bogus", "bogus", "f", new BytesRef(searchTerm)));
+                new TermFreqValueSource(fieldName, searchTerm, fieldName, new BytesRef(searchTerm)));
 
         System.out.println(String.format("Function range query: %s", functionQuery));
 
@@ -95,26 +92,36 @@ public class FunctionQueryTest {
      * WARNING: From functionRangeQuery.java: "This can be a slow query if run by itself since it must visit all docs;
      * ideally it's combined with other queries."
      *
-     * @throws IOException
+     * @throws IOException An exception occurred.
      */
     @Test
     public void testFunctionRangeTermFreq() throws IOException {
+        String fieldName = "f";
         String searchTerm = "fox";
         Number lowerVal = 2;
-        Number upperVal = null;
-        boolean includeLower = true;
-        boolean includeUpper = true;
-//        ValueSourceRangeFilter valueSourceRangeFilter = new ValueSourceRangeFilter(
-//                lowerVal, upperVal, includeLower, includeUpper
-//        );
+
         Query functionRangeQuery = new FunctionRangeQuery(
-                new TermFreqValueSource("bogus", "bogus", "f", new BytesRef(searchTerm)),
-                lowerVal, upperVal, includeLower, includeUpper
+                new TermFreqValueSource(fieldName, searchTerm, fieldName, new BytesRef(searchTerm)),
+                lowerVal, null, true, true
         );
 
         System.out.println(String.format("Function range query: %s", functionRangeQuery));
 
-        TopDocs topDocs = searcher.search(functionRangeQuery, 10);
+        // Combined the function range query with a term query so that the search does not scan the entire index!
+        BooleanClause clauseTerm = new BooleanClause(
+                new TermQuery(new Term(fieldName, searchTerm)),
+                BooleanClause.Occur.MUST);
+
+        BooleanClause clauseTermFreq = new BooleanClause(
+                functionRangeQuery,
+                BooleanClause.Occur.MUST
+        );
+
+        BooleanQuery.Builder queryBuilder = new BooleanQuery.Builder();
+        queryBuilder.add(clauseTerm);
+        queryBuilder.add(clauseTermFreq);
+
+        TopDocs topDocs = searcher.search(queryBuilder.build(), 10);
         ScoreDoc[] docs = topDocs.scoreDocs;
         for (ScoreDoc doc : docs) {
             System.out.println(String.format("Doc: %s", doc));
