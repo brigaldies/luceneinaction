@@ -2,21 +2,21 @@ package com.o19s.lucene;
 
 import junit.framework.TestCase;
 import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
-import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.*;
-import org.apache.lucene.search.*;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.spans.*;
 import org.apache.lucene.store.RAMDirectory;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.io.StringReader;
 
 public class SpanQueryTest extends TestCase {
 
@@ -32,8 +32,6 @@ public class SpanQueryTest extends TestCase {
     private SpanTermQuery dog;
     private SpanTermQuery cat;
     private Analyzer analyzer;
-
-    private final int END_OF_TOKEN_POSITION = 2147483647;
 
     @Override
     protected void setUp() throws Exception {
@@ -143,19 +141,19 @@ public class SpanQueryTest extends TestCase {
     @Test
     public void testSpanTermQuery() throws Exception {
         assertOnlyBrownFox(brown);
-        dumpSpans(brown);
+        TestUtils.dumpSpans(brown, searcher, reader);
     }
 
     @Test
     public void testSpanFirstQuery() throws Exception {
         // Search for "brown" within the first two positions
         SpanFirstQuery sfq = new SpanFirstQuery(brown, 2);
-        dumpSpans(sfq);
+        TestUtils.dumpSpans(sfq, searcher, reader);
         assertNoMatches(sfq);
 
         // Search for "brown" within the first three positions
         sfq = new SpanFirstQuery(brown, 3);
-        dumpSpans(sfq);
+        TestUtils.dumpSpans(sfq, searcher, reader);
         assertOnlyBrownFox(sfq);
     }
 
@@ -164,21 +162,21 @@ public class SpanQueryTest extends TestCase {
         SpanQuery[] quick_brown_dog = new SpanQuery[]{quick, brown, dog};
 
         SpanNearQuery snq = new SpanNearQuery(quick_brown_dog, 0, true);
-        dumpSpans(snq);
+        TestUtils.dumpSpans(snq, searcher, reader);
         assertNoMatches(snq);
 
         snq = new SpanNearQuery(quick_brown_dog, 4, true);
-        dumpSpans(snq);
+        TestUtils.dumpSpans(snq, searcher, reader);
         assertNoMatches(snq);
 
         snq = new SpanNearQuery(quick_brown_dog, 5, true);
-        dumpSpans(snq);
+        TestUtils.dumpSpans(snq, searcher, reader);
         assertOnlyBrownFox(snq);
 
         // interesting - even a sloppy phrase query would require
         // more slop to match
         snq = new SpanNearQuery(new SpanQuery[]{lazy, fox}, 3, false);
-        dumpSpans(snq);
+        TestUtils.dumpSpans(snq, searcher, reader);
         assertOnlyBrownFox(snq);
 
         PhraseQuery.Builder builder = new PhraseQuery.Builder()
@@ -199,15 +197,15 @@ public class SpanQueryTest extends TestCase {
     @Test
     public void testSpanNotQuery() throws Exception {
         SpanNearQuery quick_fox = new SpanNearQuery(new SpanQuery[]{quick, fox}, 1, true);
-        dumpSpans(quick_fox);
+        TestUtils.dumpSpans(quick_fox, searcher, reader);
         assertBothFoxes(quick_fox);
 
         SpanNotQuery quick_fox_dog = new SpanNotQuery(quick_fox, dog);
-        dumpSpans(quick_fox_dog);
+        TestUtils.dumpSpans(quick_fox_dog, searcher, reader);
         assertBothFoxes(quick_fox_dog);
 
         SpanNotQuery no_quick_red_fox = new SpanNotQuery(quick_fox, red);
-        dumpSpans(no_quick_red_fox);
+        TestUtils.dumpSpans(no_quick_red_fox, searcher, reader);
         assertOnlyBrownFox(no_quick_red_fox);
     }
 
@@ -217,109 +215,24 @@ public class SpanQueryTest extends TestCase {
         SpanNearQuery lazy_dog = new SpanNearQuery(new SpanQuery[]{lazy, dog}, 0, true);
         SpanNearQuery sleepy_cat = new SpanNearQuery(new SpanQuery[]{sleepy, cat}, 0, true);
         SpanNearQuery qf_near_ld = new SpanNearQuery(new SpanQuery[]{quick_fox, lazy_dog}, 3, true);
-        dumpSpans(qf_near_ld);
+        TestUtils.dumpSpans(qf_near_ld, searcher, reader);
         assertOnlyBrownFox(qf_near_ld);
 
         SpanNearQuery qf_near_sc = new SpanNearQuery(new SpanQuery[]{quick_fox, sleepy_cat}, 3, true);
-        dumpSpans(qf_near_sc);
+        TestUtils.dumpSpans(qf_near_sc, searcher, reader);
         assertOnlyRedFox(qf_near_sc);
 
         SpanOrQuery or = new SpanOrQuery(qf_near_ld, qf_near_sc);
-        dumpSpans(or);
+        TestUtils.dumpSpans(or, searcher, reader);
         assertBothFoxes(or);
     }
 
     @Test
     public void testDumpSpans() {
         try {
-            dumpSpans(new SpanTermQuery(new Term("f", "the")));
+            TestUtils.dumpSpans(new SpanTermQuery(new Term("f", "the")), searcher, reader);
         } catch (Exception e) {
             e.printStackTrace();
         }
-    }
-
-    /**
-     * Helper method to show the spans.
-     *
-     * @param query Query
-     * @throws IOException
-     */
-    private void dumpSpans(SpanQuery query) throws IOException {
-
-        System.out.println(String.format("\nQuery: %s", query));
-        int numSpans = 0;
-        TopDocs hits = searcher.search(query, 10);
-        float[] scores = new float[2];
-        for (ScoreDoc sd : hits.scoreDocs) {
-            scores[sd.doc] = sd.score;
-        }
-
-        SpanWeight spanWeight = query.createWeight(searcher, false, 1.0f);
-
-        int contextCount = 0;
-        for (LeafReaderContext context : reader.leaves()) {
-            contextCount++;
-
-            Spans spans = spanWeight.getSpans(context, SpanWeight.Postings.POSITIONS);
-
-            int doc_id;
-            while ((doc_id = spans.nextDoc()) != spans.NO_MORE_DOCS) {
-                numSpans++;
-//                System.out.println(spans.toString());
-//                System.out.println("doc_id=" + doc_id);
-                Document doc = reader.document(doc_id);
-                System.out.println(String.format("Doc id %d: %s", doc_id, doc.getField("f")));
-//                System.out.println(spans.nextStartPosition());
-//                System.out.println(spans.endPosition());
-
-                TokenStream stream = analyzer.tokenStream("f", new StringReader(doc.get("f")));
-                CharTermAttribute term = stream.addAttribute(CharTermAttribute.class);
-                stream.reset();
-                StringBuilder buffer = new StringBuilder();
-
-                // Initializations
-                int i = 0;
-                int lastStartPosition = spans.nextStartPosition();
-                int lastEndPosition = spans.endPosition();
-
-                while (stream.incrementToken()) {
-                    String token = term.toString().trim();
-                    // System.out.println(String.format("[%d] term: %s", i, token));
-                    // System.out.println(String.format("Start: %d, End: %d", lastStartPosition, lastEndPosition));
-
-                    if (i == lastStartPosition) {
-                        buffer.append("<");
-
-                        if (lastStartPosition != END_OF_TOKEN_POSITION) {
-                            lastStartPosition = spans.nextStartPosition();
-                        }
-                    }
-
-                    buffer.append(token);
-
-                    if (i + 1 == lastEndPosition) {
-                        buffer.append(">");
-
-                        if (lastEndPosition != END_OF_TOKEN_POSITION) {
-                            lastEndPosition = spans.endPosition();
-                        }
-                    }
-
-                    buffer.append(" ");
-
-                    i++;
-
-                }
-
-                System.out.println(String.format("Context %d, span %d: %s", contextCount, numSpans, buffer));
-
-                stream.end();
-                stream.close();
-            }
-
-//            System.out.println(String.format("Spans count: %d", numSpans));
-        }
-
-//        System.out.println(String.format("Context count: %d", contextCount));
     }
 }
